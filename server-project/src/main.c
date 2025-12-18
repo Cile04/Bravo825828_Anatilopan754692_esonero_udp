@@ -26,10 +26,10 @@ typedef int socklen_t;
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include "protocol.h"
+#include "protocol_server.h"
 
 #define NO_ERROR 0
-#define DEFAULT_IP_SV "127.0.0.1"
+#define TX_BUFFER_SIZE 512
 
 void clearwinsock()
 {
@@ -58,12 +58,21 @@ float get_pressure(void) {
     return 950.0f + ((float)rand() / (float)RAND_MAX * 100.0f);
 }
 
+int validazione_char_per_citta (const char *city){
+    for (int i = 0; city [i] != '\0'; i++){
+        if (!isalpha (city[i]) && city[i] != ' '){
+            return 0; //quando trova char non valido
+        }
+    }
+    return 1; //successo quindi ok
+}
+
 int trovacitta(const char *target)
 {
     char *elenco[] = {"bari", "roma", "milano", "napoli", "torino", "palermo", "genova", "bologna", "firenze", "venezia", "sicilia", "bergamo", "latina"};
     int size = 13;
 
-    for (int i = 0; i < size; i++)
+    for (int i = 0; i < size; i++) //per confrinto case insensitive
     {
         if (strcmp(elenco[i], target) == 0)
             return VALID_REQ;
@@ -195,9 +204,9 @@ int main(int argc, char *argv[])
         port = atoi(argv[2]);
     }
 
-    // Creazione Socket
+    // Creazione Socket UDP
 
-    int my_socket = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+    int my_socket = socket(PF_INET, SOCK_STREAM, IPPROTO_UDP);
     if (my_socket < 0)
     {
         errorhandler("Creazione socket fallita.\n");
@@ -205,16 +214,13 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Connessione SERVER
+    // BIND
 
     struct sockaddr_in sad;
-    memset(&sad, 0, sizeof(sad));
-
+    memset (&sad, 0, sizeof(sad));
     sad.sin_family = AF_INET;
-    sad.sin_addr.s_addr = htonl(INADDR_ANY);
+    sad.sin_addr.s_addr = htlon(INADDR_ANY);
     sad.sin_port = htons(port);
-
-    // binding al socket
 
     if (bind(my_socket, (struct sockaddr *)&sad, sizeof(sad)) < 0)
     {
@@ -224,25 +230,15 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Metto in ascolto il server
-
-    if (listen(my_socket, QUEUE_SIZE) < 0)
-    {
-        errorhandler("Listen fallito.\n");
-        closesocket(my_socket);
-        clearwinsock();
-        return -1;
-    }
-
     srand((unsigned int)time(NULL));
     printf("Server avviato sulla porta %d\n", port);
 
-    // accetto connessione
-    struct sockaddr_in cad; // Client Address
-    int client_socket;
-    socklen_t client_len;
+    struct sockaddr_in cad; //adress del client
+    int client_len;
+    char buffer_rx[BUFFER_SIZE]; //riceve
+    char buffer_tx [TX_BUFFER_SIZE]; //manda
 
-    while (1)
+    while (1) //da cambiare domani
     {
         client_len = sizeof(cad);
         client_socket = accept(my_socket, (struct sockaddr *)&cad, &client_len);
