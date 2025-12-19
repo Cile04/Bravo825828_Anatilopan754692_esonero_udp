@@ -27,7 +27,9 @@
 #include "protocol.h"
 
 #define NO_ERROR 0
-#define DEFAULT_IP_SV "127.0.0.1"
+#define DEFAULT_IP_SV "localhost" //si deve poter cambiare ma altrimenti questo è di default.-
+#define TX_BUFFER_SIZE 512
+#define RX_BUFFER_SIZE 512
 
 void clearwinsock()
 {
@@ -50,31 +52,42 @@ void formatta_citta(char *city)
     }
 }
 
-void risposta_meteo(char *citta, char tipo, float value)
+void stampa_risultato(weather_response_t risposta, char *nome_citta)
 {
-    formatta_citta(citta);
-    switch (tipo)
+    formatta_citta(nome_citta);
+    switch (risposta.status)
     {
-    case 't':
-        printf("%s: Temperatura = %.1f°C", citta, value);
+        case VALID_REQ:
+        switch(risposta.type){
+            case 't': printf("%s: Temperatura = %.1f°C\n", nome_citta, risposta.value); break;
+            case 'h': printf("%s: Umidità = %.1f%%\n", nome_citta, risposta.value); break;
+            case 'w': printf("%s: Vento = %.1f km/h\n", nome_citta, risposta.value); break;
+            case 'p': printf("%s: Pressione = %.1f hPa\n", nome_citta, risposta.value); break;
+            default: printf("Dato sconosciuto\n"); break;
+        }
         break;
-    case 'h':
-        printf("%s: Umidità = %.1f%%", citta, value);
+
+        case INVALID_CITY:
+        printf("Città non disponibile\n");
         break;
-    case 'w':
-        printf("%s: Vento = %.1f km/h", citta, value);
-        break;
-    case 'p':
-        printf("%s: Pressione = %.1f hPa", citta, value);
-        break;
-    default:
-        printf("Dato sconosciuto");
+
+        case INVALID_REQ:
+        printf("Richiesta non valida\n");
         break;
     }
 }
 
 int main(int argc, char *argv[])
 {
+    #if defined WIN32
+    SetConsoleOutputCP(65001); 
+    WSADATA wsa_data;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != NO_ERROR) {
+        printf("Error at WSAStartup()\n");
+        return -1;
+    }
+#endif
+
     char IP_SV[64] = DEFAULT_IP_SV;
     int port = SERVER_PORT;
     weather_request_t wrichiesta;
@@ -87,6 +100,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Il formato per l'utilizzo è: %s [-s server] [-p port] -r \"tipo città\"\n", argv[0]);
         return -1;
     }
+
     int i = 1;
 
     // CONTROLLO SU OGNI POSSIBILE PARAMETRO MANCANTE//
@@ -120,26 +134,45 @@ int main(int argc, char *argv[])
                 return -1;
             }
             char *arg = argv[i + 1];
-            memset(&wrichiesta, 0, sizeof(wrichiesta));
 
-            wrichiesta.type = arg[0]; // per dire che il primo carattere è il tipo
-
-            // ora troviamo il nome, dopo lo spazio//
-            int j = 1;
-            while (arg[j] != '\0' && isspace((unsigned char)arg[j]))
-            {
-                j++;
+            if(strchr(arg, '\t')!=NULL){
+                fprintf(stderr, "ERRORE: Caratteri di tabulazione NON ammessi.\n");
+                return -1;
             }
 
-            strncpy(wrichiesta.city, &arg[j], sizeof(wrichiesta.city) - 1);
-            wrichiesta.city[63] = '\0'; // evito overflow//
+            char *primo_spazio = strchr(arg, ' ');
+            if (primo_spazio == NULL){
+                fprintf(stderr, "ERRORE: Formato Invalido, manca la città.\n");
+                return -1;
+            }
 
+            int type_len = primo_spazio - arg;
+            if(type_len != 1){
+                fprintf(stderr, "ERRORE: Il tipo deve essere un singolo carattere.\n");
+                return -1;
+            }
+
+            wrichiesta.type = arg[0];
+
+            char *inzio_citta = primo_spazio;
+            while(*inzio_citta != '\0' && isspace((unsigned char)*inzio_citta)) inzio_citta++;
+
+            if(*inzio_citta == '\0'){
+                fprintf(stderr, "ERRORE: Nome città mancante.\n");
+                return -1;
+            }
+
+            if(strlen(inzio_citta) > 63){
+                fprintf(stderr, "ERRORE: Nome città troppo lungo.\n");
+                return -1;
+            }
+
+            strncpy(wrichiesta.city, inzio_citta, sizeof(wrichiesta.city)-1);
+            wrichiesta.city[63] = '\0';
             r_trovato = 1;
             i += 2;
-        }
-        else
-        {
-            fprintf(stderr, "Parametro sconosciuto: %s\n", argv[i]);
+        } else {
+            fprintf(stderr, "Parametro Sconosciuto: %s\n", argv[i]);
             return -1;
         }
     }
@@ -150,20 +183,41 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-#if defined WIN32
-    SetConsoleOutputCP(65001); // PER GRADI IN TEMPERATURA //
-    WSADATA wsa_data;
-    int result = WSAStartup(MAKEWORD(2, 2), &wsa_data);
-    if (result != NO_ERROR)
-    {
-        printf("Error at WSAStartup()\n");
-        return -1;
+    //RISOLUZUONE DEL DNS//
+
+    struct hostent *host;
+    struct in_addr server_addr_struct;
+
+    //RISOLUZIONE DEL NOME//
+
+    host = gethostbyname(IP_SV);
+    if(host == NULL){
+        unsigned long ip_addr = inet_addr(IP_SV);
+        if(ip_addr == INADDR_NONE){
+            fprintf(stderr, "ERRORE: Impossibile risolvere il server '%s'\n", IP_SV);
+            clearwinsock();
+            return -1;
+        }
+
+        server_addr_struct.s_addr = ip_addr;
+    } else {
+        server_addr_struct = *((struct in_addr *)host -> h_addr_list[0]);
     }
-#endif
+
+    struct hostent *he_reverse;
+    char *nome_finale_sv;
+    char *ip_finale_sv = inet_ntoa(server_addr_struct);
+
+    he_reverse = gethostbyaddr((const char *)&server_addr_struct, sizeof(server_addr_struct), AF_INET);
+    if (he_reverse != NULL) {
+        nome_finale_sv = he_reverse->h_name;
+    } else {
+        nome_finale_sv = IP_SV;
+    }
 
     // Creazione socket
 
-    int my_socket = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+    int my_socket = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
     if (my_socket < 0)
     {
@@ -178,75 +232,66 @@ int main(int argc, char *argv[])
     memset(&sad, 0, sizeof(sad));
 
     sad.sin_family = AF_INET;
-    sad.sin_addr.s_addr = inet_addr(IP_SV); // IP del server (localhost)
+    sad.sin_addr = server_addr_struct;
     sad.sin_port = htons(port);             // Porta del server (56700)
 
-    // Connessione al server
+    char buffer_tx[TX_BUFFER_SIZE];
+    memset(buffer_tx, 0, TX_BUFFER_SIZE);
 
-    if (connect(my_socket, (struct sockaddr *)&sad, sizeof(sad)) < 0)
-    {
-        errorhandler("Errore durante la connessione al server.\n");
-        closesocket(my_socket);
-        clearwinsock();
-        return -1;
-    }
+    buffer_tx[0] = wrichiesta.type;
+    int city_len = strlen(wrichiesta.city);
+    memcpy(&buffer_tx[1], wrichiesta.city, city_len);
+    int tx_len = 1 + city_len + 1;
 
     // INVIO PARAMETRI AL SV//
 
-    if (send(my_socket, (char *)&wrichiesta, sizeof(wrichiesta), 0) != sizeof(wrichiesta))
-    {
-        errorhandler("Send ha inviato un numero differente di bytes di quelli attesi");
+    if (sendto(my_socket, buffer_tx, tx_len, 0, (struct sockaddr *) &sad, sizeof(sad)) != tx_len){
+        errorhandler("Sendto ha inviato un numero differente di bytes\n.");
         closesocket(my_socket);
         clearwinsock();
         return -1;
     }
 
+
     // PER RICEVERE I BYTES E VERIFICHE NEL RICEVERE //
 
-    int bytes_ricevuti;
-    unsigned long int tot_bytes_ricevuti = 0;
+    char buffer_rx[RX_BUFFER_SIZE];
+    struct sockaddr_in from_addr;
+    socklen_t from_len = sizeof(from_addr);
+
+    int bytes_rcvd = recvfrom(my_socket, buffer_rx, RX_BUFFER_SIZE, 0, (struct sockaddr*) &from_addr, &from_len);
+
+    if(bytes_rcvd <= 0){
+        errorhandler("ERRORE: recvfrom fallita o timeout.\n");
+        closesocket(my_socket);
+        clearwinsock();
+        return -1;
+    }
+
     weather_response_t risposta;
+    int offset = 0;
 
-    while (tot_bytes_ricevuti < sizeof(risposta))
-    {
-        bytes_ricevuti = recv(
-            my_socket, ((char *)&risposta) + tot_bytes_ricevuti, sizeof(risposta) - tot_bytes_ricevuti, 0);
+    uint32_t net_status;
+    memcpy(&net_status, buffer_rx + offset, sizeof(uint32_t));
+    risposta.status = ntohl(net_status);
+    offset += sizeof(uint32_t);
 
-        if (bytes_ricevuti <= 0)
-        {
-            errorhandler("ERRORE: recv è fallita o la conessione si è chiusa prematuramente");
-            closesocket(my_socket);
-            clearwinsock();
-            return -1;
-        }
+    memcpy(&risposta.type, buffer_rx + offset, sizeof(char));
+    offset += sizeof(char);
 
-        tot_bytes_ricevuti += bytes_ricevuti;
-    }
-    // SWITCH PER DARE I RISULTATI IN OUTPUT //
+    uint32_t net_value_int;
+    memcpy(&net_value_int, buffer_rx + offset, sizeof(uint32_t));
+    net_value_int = ntohl(net_value_int);
+    memcpy(&risposta.value, &net_value_int, sizeof(float));
+    offset += sizeof(uint32_t);
 
-    risposta.status = ntohl(risposta.status);
+    //OUTPUT//
 
-    printf("Ricevuto risultato dal server ip %s. ", IP_SV);
+    printf("Ricevuto risultato dal server %s (ip %s). ", nome_finale_sv, ip_finale_sv);
 
-    switch (risposta.status)
-    {
-    case INVALID_CITY:
-        printf("Città non disponibile");
-        break;
-    case INVALID_REQ:
-        printf("Richiesta non valida");
-        break;
-    case VALID_REQ:
-        (risposta_meteo(wrichiesta.city, risposta.type, risposta.value));
-        printf("\n");
-        break;
+    stampa_risultato(risposta, wrichiesta.city);
 
-    default:
-        printf("Erorre del server sconosciuto (STATUS: %d)\n", risposta.status);
-    }
     closesocket(my_socket);
     clearwinsock();
-    printf("Client terminato");
     return 0;
-
-} // finisce main
+    }
