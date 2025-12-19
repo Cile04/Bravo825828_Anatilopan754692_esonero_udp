@@ -224,7 +224,7 @@ int main(int argc, char *argv[])
     printf("Server avviato sulla porta %d\n", port);
 
     struct sockaddr_in cad; //adress del client
-    int client_len;
+    socklen_t client_len;
     char buffer_rx[BUFFER_SIZE]; //riceve
     int bytes_ricevuti;
 
