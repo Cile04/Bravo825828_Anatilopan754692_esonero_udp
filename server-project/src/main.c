@@ -18,11 +18,11 @@ typedef int socklen_t;
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <ctype.h>
 #include <netdb.h>
 #define closesocket close
 #endif
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -87,16 +87,24 @@ void errorhandler(char *errormessage)
 
 void richiesta_udp (int socket_server, struct sockaddr_in client_addr, char* buffer_rx, int bytes_ricevuti){
 
+if(bytes_ricevuti < 1){
+return; 
+	}
+
     weather_request_t richiesta;
     weather_response_t risposta;
     char buffer_tx[TX_BUFFER_SIZE]; // UTILIZZO DI BUFFER LOCALE PER DARE LA RISPOSTA
 
     richiesta.type = buffer_rx[0];
+
     int city_len = bytes_ricevuti - 1;
-    if (city_len >= 64) city_len = 63;
-    if(city_len < 0) city_len = 0;
-    memcpy(richiesta.city, &buffer_rx[1], city_len);
-    richiesta.city[city_len] = '\0';
+    if (city_len > 63) city_len = 63;
+
+    if(city_len > 0){
+memcpy(richiesta.city, &buffer_rx[1], city_len); 
+
+	}
+richiesta.city[city_len] = '\0';
 
     struct hostent *he; //he per host end quindi le prime lettere
     char *client_name;
@@ -105,7 +113,7 @@ void richiesta_udp (int socket_server, struct sockaddr_in client_addr, char* buf
     he = gethostbyaddr((const char *)&client_addr.sin_addr, sizeof(client_addr.sin_addr), AF_INET);
     client_name = (he != NULL) ? he->h_name : client_ip;
 
-    printf("Richiesta ricevuta da %s (ip %s): type ='%c', city ='%s'\n", client_name, client_ip, richiesta.type, richiesta.city);
+    printf("Richiesta ricevuta da %s (ip %s): type='%c', city='%s'\n", client_name, client_ip, richiesta.type, richiesta.city);
 
     char city_lower[64];
     strcpy(city_lower, richiesta.city);
@@ -181,7 +189,7 @@ int main(int argc, char *argv[])
 #endif
 
     int port = SERVER_PORT;
-    if (argc > 2 && strcmp(argv[1], "-p") == 0)
+    if (argc >= 3 && strcmp(argv[1], "-p") == 0)
     {
         port = atoi(argv[2]);
     }
