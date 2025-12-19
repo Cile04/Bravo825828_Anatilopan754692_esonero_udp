@@ -60,7 +60,7 @@ float get_pressure(void) {
 
 int validazione_char_per_citta (const char *city){
     for (int i = 0; city [i] != '\0'; i++){
-        if (!isalpha (city[i]) && city[i] != ' '){
+        if (!isalnum((unsigned char)city[i]) && city[i] != ' '){
             return 0; //quando trova char non valido
         }
     }
