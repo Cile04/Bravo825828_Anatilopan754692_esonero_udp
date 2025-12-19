@@ -85,102 +85,84 @@ void errorhandler(char *errormessage)
     printf("%s", errormessage);
 }
 
-void gestione_connessione_client(int client_socket, struct sockaddr_in client_addr)
-{
-    int bytes_ricevuti;
-    weather_response_t risposta;
+void richiesta_udp (int socket_server, struct sockaddr_in client_addr, char* buffer_rx, int bytes_ricevuti){
+
     weather_request_t richiesta;
+    weather_response_t risposta;
+    char buffer_tx[TX_BUFFER_SIZE]; // UTILIZZO DI BUFFER LOCALE PER DARE LA RISPOSTA
 
-    // controllo che siano stati ricevuti i bytes
-    bytes_ricevuti = recv(client_socket, (char *)&richiesta, sizeof(richiesta), 0);
+    richiesta.type = buffer_rx[0];
+    int city_len = bytes_ricevuti - 1;
+    if (city_len >= 64) city_len = 63;
+    if(city_len < 0) city_len = 0;
+    memcpy(richiesta.city, &buffer_rx[1], city_len);
+    richiesta.city[city_len] = '\0';
 
-    if (bytes_ricevuti <= 0)
-    {
-        printf("Errore in ricezione o connessione chiusa dal client.\n");
-        closesocket(client_socket);
-        return;
-    }
+    struct hostent *he; //he per host end quindi le prime lettere
+    char *client_name;
+    char *client_ip = inet_ntoa(client_addr.sin_addr);
 
-    // Evito Overflow Buffer
-    richiesta.city[63] = '\0';
+    he = gethostbyaddr((const char *)&client_addr.sin_addr, sizeof(client_addr.sin_addr), AF_INET);
+    client_name = (he != NULL) ? he->h_name : client_ip;
 
-    // per renderlo case insensitive
-    for (int i = 0; richiesta.city[i]; i++)
-    {
-        richiesta.city[i] = tolower((unsigned char)richiesta.city[i]);
-    }
-    richiesta.type = tolower((unsigned char)richiesta.type);
+    printf("Richiesta ricevuta da %s (ip %s): type ='%c', city ='%s'\n", client_name, client_ip, richiesta.type, richiesta.city);
 
-    printf("Richiesta '%c %s' dal client ip %s\n",
-           richiesta.type, richiesta.city, inet_ntoa(client_addr.sin_addr));
+    char city_lower[64];
+    strcpy(city_lower, richiesta.city);
+    for(int i = 0; city_lower[i]; i++) city_lower[i] = tolower((unsigned char) city_lower[i]);
+    char type_lower = tolower ((unsigned char) richiesta.type);
+
+    int valid_chars = validazione_char_per_citta(richiesta.city);
+    int valid_type = (type_lower=='t'||type_lower=='h'||type_lower=='w'||type_lower=='p');
 
     risposta.type = richiesta.type;
-    risposta.value = 0.0;
+    risposta.value = 0.0f;
 
-    int controllo_citta = trovacitta(richiesta.city);
-
-    if (controllo_citta == VALID_REQ)
-    {
-        // Città valida, ora andiamo a validare il tipo
-        risposta.status = VALID_REQ;
-
-        switch (richiesta.type)
-        {
-        case 't':
-            risposta.value = get_temperature();
-            break;
-        case 'h':
-            risposta.value = get_humidity();
-            break;
-        case 'w':
-            risposta.value = get_wind();
-            break;
-        case 'p':
-            risposta.value = get_pressure();
-            break;
-        default:
-            // tipo errato
-            risposta.status = INVALID_REQ;
-            risposta.type = '\0';
-            risposta.value = 0.0;
-            break;
+    if(!valid_chars ||!valid_type){
+        risposta.status = INVALID_REQ; //ovvero 2
+    } else {
+        if(trovacitta(city_lower) == INVALID_CITY){
+            risposta.status = INVALID_CITY; //OVVERO 1
+        } else{
+            risposta.status = VALID_REQ; // OVVERO 0
+            switch(type_lower){
+                case 't': risposta.value = get_temperature(); break;
+                case 'h': risposta.value = get_humidity(); break;
+                case 'w': risposta.value = get_wind(); break;
+                case 'p': risposta.value = get_pressure(); break;
+            }
         }
     }
-    else
-    {
-        // Città non valida
-        risposta.status = INVALID_CITY;
-        risposta.type = '\0';
-        risposta.value = 0.0;
+
+    if (risposta.status == VALID_REQ){
+        printf("Esito: Successo (0). Valore : %.2f\n", risposta.value);
+    } else if(risposta.status == INVALID_REQ){
+        printf("Esito: La richiesta NON è valida (COD Errore: 2)\n");
+    } else if(risposta.status == INVALID_CITY){
+        printf("Esito: La città che hai inserito NON è valida (COD ERRORE: 1)\n");
     }
 
-    // risposta in base allo status
-    if (risposta.status == VALID_REQ)
-    {
-        printf("Esito: Successo (0). Il valore generato è: %.2f\n", risposta.value);
-    }
-    else if (risposta.status == INVALID_REQ)
-    {
-        printf("Esito: La richiesta NON è valida (Cod errore: 2)\n");
-    }
-    else if (risposta.status == INVALID_CITY)
-    {
-        printf("Esito: La città inserita NON è valida (Cod errore: 1)\n");
-    }
+    int offset = 0;
+    memset(buffer_tx, 0, TX_BUFFER_SIZE);
 
-    risposta.status = htonl(risposta.status);
+    uint32_t net_status = htonl(risposta.status);
+    memcpy(buffer_tx + offset, &net_status, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
 
-    if (send(client_socket, (char *)&risposta, sizeof(risposta), 0) != sizeof(risposta))
-    {
-        errorhandler("ERRORE: send ha inviato un numero di byte diverso a da quello atteso!\n");
-        ;
-    }else
-    {
+    memcpy(buffer_tx + offset, &risposta.type, sizeof(char));
+    offset += sizeof(char);
+
+    uint32_t net_value_int;
+    memcpy(&net_value_int, &risposta.value, sizeof(float));
+    net_value_int = htonl(net_value_int);
+    memcpy(buffer_tx + offset, &net_value_int, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+
+    if(sendto(socket_server, buffer_tx, offset, 0, (struct sockaddr *)&client_addr, sizeof(client_addr)) != offset){
+        errorhandler("ERRORE: sendto ha inviato un numero diverso di byte da quelli attesi\n");
+    } else {
         printf("Risposta inviata al client correttamente!\n");
     }
-
-    closesocket(client_socket);
-    printf("Connessione chiusa\n");
 }
 
 int main(int argc, char *argv[])
@@ -206,7 +188,7 @@ int main(int argc, char *argv[])
 
     // Creazione Socket UDP
 
-    int my_socket = socket(PF_INET, SOCK_STREAM, IPPROTO_UDP);
+    int my_socket = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (my_socket < 0)
     {
         errorhandler("Creazione socket fallita.\n");
@@ -219,7 +201,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in sad;
     memset (&sad, 0, sizeof(sad));
     sad.sin_family = AF_INET;
-    sad.sin_addr.s_addr = htlon(INADDR_ANY);
+    sad.sin_addr.s_addr = htonl(INADDR_ANY);
     sad.sin_port = htons(port);
 
     if (bind(my_socket, (struct sockaddr *)&sad, sizeof(sad)) < 0)
@@ -236,25 +218,20 @@ int main(int argc, char *argv[])
     struct sockaddr_in cad; //adress del client
     int client_len;
     char buffer_rx[BUFFER_SIZE]; //riceve
-    char buffer_tx [TX_BUFFER_SIZE]; //manda
+    int bytes_ricevuti;
 
     while (1) //da cambiare domani
     {
         client_len = sizeof(cad);
-        client_socket = accept(my_socket, (struct sockaddr *)&cad, &client_len);
+        memset(buffer_rx, 0, BUFFER_SIZE);
 
-        if (client_socket < 0)
-        {
-            errorhandler("Accept fallito.\n");
-            continue;
+        bytes_ricevuti = recvfrom(my_socket, buffer_rx, BUFFER_SIZE, 0, (struct sockaddr *)&cad, &client_len);
+
+        if(bytes_ricevuti > 0){
+            richiesta_udp(my_socket, cad, buffer_rx, bytes_ricevuti);
         }
-
-        printf("Client Trovato Correttamente!\n");
-        printf("L'indirizzo IP del client è: %s\n", inet_ntoa(cad.sin_addr));
-        gestione_connessione_client(client_socket, cad);
     }
 
     closesocket(my_socket);
     clearwinsock();
     return 0;
-}
