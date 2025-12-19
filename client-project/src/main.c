@@ -9,6 +9,7 @@
 
 #if defined WIN32
 #include <winsock.h>
+typedef int socklen_t;
 #else
 
 #include <string.h>
